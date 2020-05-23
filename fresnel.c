@@ -214,8 +214,8 @@ int main(int argc, char *argv[])
 	/* libfftw3 first requires you to create a "plan" for a fixed size array, so that it can do some precomputation
 	 * required to to Fourier transforms on that size of array. With this in mind, we try to avoid re-creating plans
 	 * if the input array size has not changed */
-	complex double *input = NULL, *kernel = NULL, *output = NULL;
-	complex double *input_spec = NULL, *kernel_spec = NULL, *output_spec = NULL;
+	complex double *ainput = NULL, *akernel = NULL, *aoutput = NULL;
+	complex double *ainput_spec = NULL, *akernel_spec = NULL, *aoutput_spec = NULL;
 	fftw_plan input_plan = NULL, kernel_plan = NULL, output_plan = NULL;
 
 	char *infile = NULL, *outfile = NULL, *flags = NULL;
@@ -243,12 +243,12 @@ int main(int argc, char *argv[])
 			w = pic.width;
 			h = pic.height;
 
-			input = realloc(input, 2 * w * 2 * h * sizeof(*input));
-			kernel = realloc(kernel, 2 * w * 2 * h * sizeof(*kernel));
-			output = realloc(output, 2 * w * 2 * h * sizeof(*output));
-			input_spec = realloc(input_spec, 2 * w * 2 * h * sizeof(*input_spec));
-			kernel_spec = realloc(kernel_spec, 2 * w * 2 * h * sizeof(*kernel_spec));
-			output_spec = realloc(output_spec, 2 * w * 2 * h * sizeof(*output_spec));
+			ainput = realloc(ainput, 2 * w * 2 * h * sizeof(*ainput));
+			akernel = realloc(akernel, 2 * w * 2 * h * sizeof(*akernel));
+			aoutput = realloc(aoutput, 2 * w * 2 * h * sizeof(*aoutput));
+			ainput_spec = realloc(ainput_spec, 2 * w * 2 * h * sizeof(*ainput_spec));
+			akernel_spec = realloc(akernel_spec, 2 * w * 2 * h * sizeof(*akernel_spec));
+			aoutput_spec = realloc(aoutput_spec, 2 * w * 2 * h * sizeof(*aoutput_spec));
 	
 			timing_start("Create %dx%d FFT plans", 2 * h, 2 * w);
 			int flags = FFTW_DESTROY_INPUT;
@@ -258,17 +258,33 @@ int main(int argc, char *argv[])
 				flags |= FFTW_MEASURE;
 			else
 				flags |= FFTW_ESTIMATE;
-			input_plan = fftw_plan_dft_2d(2 * h, 2 * w, input, input_spec, FFTW_FORWARD, flags);
-			kernel_plan = fftw_plan_dft_2d(2 * h, 2 * w, kernel, kernel_spec, FFTW_FORWARD, flags);
-			output_plan = fftw_plan_dft_2d(2 * h, 2 * w, output_spec, output, FFTW_BACKWARD, flags);
+			input_plan = fftw_plan_dft_2d(2 * h, 2 * w, ainput, ainput_spec, FFTW_FORWARD, flags);
+			kernel_plan = fftw_plan_dft_2d(2 * h, 2 * w, akernel, akernel_spec, FFTW_FORWARD, flags);
+			output_plan = fftw_plan_dft_2d(2 * h, 2 * w, aoutput_spec, aoutput, FFTW_BACKWARD, flags);
 			timing_end();
 		}
 
+		/* 2D arrays aliasing the data, for convenient index manipulation */
+		complex double (*input)[2 * w] = (complex double (*)[2 * w])ainput;
+		complex double (*kernel)[2 * w] = (complex double (*)[2 * w])akernel;
+		complex double (*output)[2 * w] = (complex double (*)[2 * w])aoutput;
+		complex double (*input_spec)[2 * w] = (complex double (*)[2 * w])ainput_spec;
+		complex double (*kernel_spec)[2 * w] = (complex double (*)[2 * w])akernel_spec;
+		complex double (*output_spec)[2 * w] = (complex double (*)[2 * w])aoutput_spec;
+		uint8_t (*pixels)[w][3] = (uint8_t (*)[w][3])pic.pixels;
+
 		timing_start("Load input");
-		memset(input, 0, 2 * w * 2 * h * sizeof(*input));
+		/* Discrete Fourier transforms are band-limited: they compute the spectrum of a periodic repetiton of the input
+		 * array. To make a non-periodic convolution we pad the input array with zeroes, so that in the output there is
+		 * a region that excludes any contributions from the "adjacent copies" of the input array.
+		 *
+		 * In periodic mode we could have used an unpadded array, but for simplicity (fixed size arrays), we just repeat
+		 * the input array twice, which restores contributions from "adjacent copies" in the output.
+		 */
+		memset(input, 0, 2 * w * 2 * h * sizeof(**input));
 		for(int y = 0; y < (tiley ? 2 * h : h); y++)
 			for(int x = 0; x < (tilex ? 2 * w : w); x++)
-				rgb_to_complex(pic.pixels[(y % h) * w + (x % w)], &input[y * (2 * w) + x]);
+				rgb_to_complex(pixels[y % h][x % w], &input[y][x]);
 		timing_end();
 		free_picture(pic);
 
@@ -280,10 +296,12 @@ int main(int argc, char *argv[])
 		for(int y = -h; y < h; y++)
 			for(int x = -w; x < w; x++)
 			{
+				/* Fresnel diffraction kernel */
 				double R = hypot(x, y);
 				double r = hypot(R, distance);
 				double theta = atan2(R, distance);
-				kernel[(y + h) * (2 * w) + (x + w)] = cexp(I * 2 * M_PI * (r - distance) / lambda) * -I * cos(theta) / r / lambda;
+				double phase = 2 * M_PI * (r - distance) / lambda;
+				kernel[y + h][x + w] = -I * cos(theta) / (r * lambda) * cexp(I * phase);
 			}
 		timing_end();
 
@@ -294,7 +312,10 @@ int main(int argc, char *argv[])
 		timing_start("Convolution in frequency space");
 		for(int y = 0; y < 2 * h; y++)
 			for(int x = 0; x < 2 * w; x++)
-				output_spec[y * (2 * w) + x] = input_spec[y * (2 * w) + x] * kernel_spec[y * (2 * w) + x] / (2 * w * 2 * h);
+				output_spec[y][x] = input_spec[y][x] * kernel_spec[y][x] / (2 * w * 2 * h);
+				/* Divide by the array size because libfftw3 produces un-normalized Fourier transforms: doing a Fourier
+				 * transform followed by an inverse Fourier transform produces the original array scaled by its size
+				 */
 		timing_end();
 
 		timing_start("Inverse Fourier transform output");
@@ -303,21 +324,23 @@ int main(int argc, char *argv[])
 		
 		timing_start("Convert output");
 		pic = new_picture(w, h);
+		pixels = (uint8_t (*)[w][3])pic.pixels;
 		if(split)
 			for(int y = 0; y < h; y++)
 				for(int x = 0; x < w; x++)
 					if(y < h / 2)
-						complex_to_gray(output[(y + h) * (2 * w) + (x + w)], pic.pixels[y * w + x]);
+						complex_to_gray(output[y + h][x + w], pixels[y][x]);
 					else
-						complex_to_rgb(output[(y + h) * (2 * w) + (x + w)], pic.pixels[y * w + x]);
+						complex_to_rgb(output[y + h][x + w], pixels[y][x]);
 		else if(intensity)
 			for(int y = 0; y < h; y++)
 				for(int x = 0; x < w; x++)
-					complex_to_gray(output[(y + h) * (2 * w) + (x + w)], pic.pixels[y * w + x]);
+					complex_to_gray(output[y + h][x + w], pixels[y][x]);
 		else
 			for(int y = 0; y < h; y++)
 				for(int x = 0; x < w; x++)
-					complex_to_rgb(output[(y + h) * (2 * w) + (x + w)], pic.pixels[y * w + x]);
+					complex_to_rgb(output[y + h][x + w], pixels[y][x]);
+					/* Select a region where convolution produced no wraparound "cross terms" */
 		timing_end();
 		timing_start("Save picture");
 		write_picture(outfile, pic);
@@ -332,11 +355,11 @@ int main(int argc, char *argv[])
 	fftw_destroy_plan(kernel_plan);
 	fftw_destroy_plan(output_plan);
 
-	free(input);
-	free(kernel);
-	free(output);
-	free(input_spec);
-	free(kernel_spec);
-	free(output_spec);
+	free(ainput);
+	free(akernel);
+	free(aoutput);
+	free(ainput_spec);
+	free(akernel_spec);
+	free(aoutput_spec);
 	return 0;
 }
