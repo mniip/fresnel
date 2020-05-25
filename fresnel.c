@@ -297,12 +297,11 @@ int main(int argc, char *argv[])
 		for(int y = -h; y < h; y++)
 			for(int x = -w; x < w; x++)
 			{
-				/* Fresnel diffraction kernel */
+				/* Fresnel-Kirchoff diffraction kernel */
 				double R = hypot(x, y);
 				double r = hypot(R, distance);
-				double theta = atan2(R, distance);
 				double phase = 2 * M_PI * (r - distance) / lambda;
-				kernel[y + h][x + w] = -I * cos(theta) / (r * lambda) * cexp(I * phase);
+				kernel[y + h][x + w] = -I / lambda * (1 + I * lambda / (2 * M_PI * r)) * distance / (r * r) * cexp(I * phase);
 			}
 		timing_end();
 
