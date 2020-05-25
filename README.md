@@ -45,6 +45,8 @@ screen in pixels.
    amplitude).
  - `s` (split view): render intensity in the top half of the image and
    amplitude-phase in the bottom half.
+ - 'n' (normalize): normalize the output (make the maxmimum magnitude 1) before
+   rendering.
  - `x`: assume the input image to be periodic in the X direction. This causes
    light to "wrap around" the left/right sides of the screen. Otherwise the
    image is assumed to be of finite size, surrounded by an infinite plane that

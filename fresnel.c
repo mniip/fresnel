@@ -230,6 +230,7 @@ int main(int argc, char *argv[])
 		int split = flags && strchr(flags, 's');
 		int tilex = flags && strchr(flags, 'x');
 		int tiley = flags && strchr(flags, 'y');
+		int normalize = flags && strchr(flags, 'n');
 
 		timing_start("Load picture");
 		struct picture pic = read_picture(infile);
@@ -321,6 +322,19 @@ int main(int argc, char *argv[])
 		timing_start("Inverse Fourier transform output");
 		fftw_execute(output_plan);
 		timing_end();
+
+		if(normalize)
+		{
+			double maxE = 0.0;
+			for(int y = 0; y < h; y++)
+				for(int x = 0; x < w; x++)
+					if(cabs(output[y + h][x + w]) > maxE)
+						maxE = cabs(output[y + h][x + w]);
+			if(maxE)
+				for(int y = 0; y < 2 * h; y++)
+					for(int x = 0; x < 2 * w; x++)
+						output[y][x] /= maxE;
+		}
 		
 		timing_start("Convert output");
 		pic = new_picture(w, h);
